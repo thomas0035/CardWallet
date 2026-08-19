@@ -3,10 +3,12 @@
   "version": "1.0.0",
   "main": "index.ts",
   "scripts": {
-    "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
-    "web": "expo start --web"
+    "start": "expo start --go",
+    "android": "expo start --go --android",
+    "phone": "expo start --go --android --clear",
+    "lan": "expo start --go --clear",
+    "tunnel": "expo start --go --tunnel --clear",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",
