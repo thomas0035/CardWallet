@@ -18,6 +18,8 @@ import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { supabase } from '../config/supabase';
 import { useCardStore } from '../store/cardStore';
+import { useWalletStore } from '../store/walletStore';
+import { decryptField, encryptField } from '../services/crypto';
 import { formatExpiryDate } from '../utils/expiryDate';
 import { dataErrorMessage } from '../utils/errorMessages';
 import {
@@ -107,6 +109,7 @@ export default function AddCardScreen({ navigation, route }: Props) {
   const { cards, addCard, updateCard } = useCardStore();
   const editingCard = cards.find((card) => card.id === editingCardId);
   const isEditing = !!editingCard;
+  const walletKey = useWalletStore((state) => state.key);
 
   // Debit/Credit fields
   const [cardHolderName, setCardHolderName] = useState('');
@@ -170,8 +173,20 @@ export default function AddCardScreen({ navigation, route }: Props) {
       case 'Debit':
       case 'Credit':
         setCardHolderName(editingCard.card_holder_name || '');
-        setCardNumber(editingCard.card_number_encrypted || '');
         setExpiryDate(editingCard.expiry_date || '');
+
+        if (editingCard.card_number_encrypted && walletKey) {
+          try {
+            setCardNumber(decryptField(editingCard.card_number_encrypted, walletKey));
+          } catch {
+            // Wrong key, or the row was written by a different wallet. Leave
+            // the field empty rather than filling it with unusable ciphertext,
+            // which would otherwise be saved back over the real number.
+            setCardNumber('');
+          }
+        } else {
+          setCardNumber('');
+        }
         break;
       case 'ID':
         setIdName(editingCard.card_holder_name || '');
@@ -193,7 +208,7 @@ export default function AddCardScreen({ navigation, route }: Props) {
         setBusinessEmail(editingCard.business_email || '');
         break;
     }
-  }, [editingCard]);
+  }, [editingCard, walletKey]);
 
   const handleExpiryDateChange = (value: string) => {
     setExpiryDate(formatExpiryDate(value));
@@ -260,13 +275,20 @@ export default function AddCardScreen({ navigation, route }: Props) {
       }
 
       const digits = normalizeCardNumber(cardNumber);
+
+      if (!walletKey) {
+        Alert.alert('Wallet locked', 'Unlock your wallet before saving a card.');
+        return;
+      }
+
       payload = {
         ...payload,
         card_holder_name: cardHolderName.trim(),
+        // Kept in the clear on purpose: it is what the card list shows, and
+        // four digits identify nothing on their own.
         last_four_digits: digits.slice(-4),
-        // Still plaintext at this point. Phase 5 encrypts it on-device before
-        // it reaches this payload; the column name is aspirational until then.
-        card_number_encrypted: digits,
+        // Encrypted here, on the device. Supabase only ever receives ciphertext.
+        card_number_encrypted: encryptField(digits, walletKey),
         expiry_date: expiryDate.trim() || null,
       };
     } else if (cardType === 'ID') {

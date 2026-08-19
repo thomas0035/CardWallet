@@ -4,15 +4,20 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from '../config/supabase';
+import { getCachedKey } from '../services/crypto';
+import { useWalletStore } from '../store/walletStore';
+import { useCardStore } from '../store/cardStore';
 import LoginScreen from '../screens/LoginScreen';
 import RegisterScreen from '../screens/RegisterScreen';
 import HomeScreen from '../screens/HomeScreen';
 import AddCardScreen from '../screens/AddCardScreen';
 import CardDetailScreen from '../screens/CardDetailScreen';
+import WalletLockScreen from '../screens/WalletLockScreen';
 
 export type RootStackParamList = {
   Login: undefined;
   Register: undefined;
+  WalletLock: undefined;
   Home: undefined;
   AddCard: { cardId?: string } | undefined;
   CardDetail: { cardId: string };
@@ -22,12 +27,23 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 
 const screenOptions = { headerShown: false } as const;
 
+function SplashScreen() {
+  return (
+    <View style={styles.splash}>
+      <ActivityIndicator color="#6c47ff" size="large" />
+    </View>
+  );
+}
+
 export default function AppNavigator() {
   const [session, setSession] = useState<Session | null>(null);
   // Distinct from `session === null`: we do not know yet, so show neither
   // stack. Without this the login screen flashes before the stored session
   // finishes loading.
   const [initializing, setInitializing] = useState(true);
+
+  const walletKey = useWalletStore((state) => state.key);
+  const walletChecked = useWalletStore((state) => state.checked);
 
   useEffect(() => {
     // Read whatever session is already persisted in AsyncStorage.
@@ -44,20 +60,43 @@ export default function AppNavigator() {
     // Covers sign-in, sign-out, and token refresh, including refreshes that
     // fail because the session finally expired.
     const { data: subscription } = supabase.auth.onAuthStateChange(
-      (_event, nextSession) => {
+      (event, nextSession) => {
         setSession(nextSession);
+
+        if (event === 'SIGNED_OUT') {
+          // Drop both the decrypted cards and the wallet key, so signing in as
+          // someone else on this device cannot read the previous user's data.
+          useCardStore.getState().setCards([]);
+          useWalletStore.getState().lock();
+        }
       }
     );
 
     return () => subscription.subscription.unsubscribe();
   }, []);
 
+  // Look for a wallet key cached on this device, so a returning user goes
+  // straight to their cards without retyping the passphrase.
+  useEffect(() => {
+    if (!session) return;
+
+    let cancelled = false;
+    getCachedKey().then((key) => {
+      if (cancelled) return;
+      if (key) {
+        useWalletStore.getState().setKey(key);
+      } else {
+        useWalletStore.getState().setChecked(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
+
   if (initializing) {
-    return (
-      <View style={styles.splash}>
-        <ActivityIndicator color="#6c47ff" size="large" />
-      </View>
-    );
+    return <SplashScreen />;
   }
 
   return (
@@ -69,16 +108,24 @@ export default function AppNavigator() {
         no way to press Back from Home into the login screen.
       */}
       <Stack.Navigator screenOptions={screenOptions}>
-        {session ? (
+        {!session ? (
+          <>
+            <Stack.Screen name="Login" component={LoginScreen} />
+            <Stack.Screen name="Register" component={RegisterScreen} />
+          </>
+        ) : !walletKey ? (
+          // Signed in, but the card numbers cannot be read yet. Shown while
+          // the cached-key lookup is still running too, so the passphrase
+          // prompt never flashes for someone who has already unlocked.
+          <Stack.Screen
+            name="WalletLock"
+            component={walletChecked ? WalletLockScreen : SplashScreen}
+          />
+        ) : (
           <>
             <Stack.Screen name="Home" component={HomeScreen} />
             <Stack.Screen name="AddCard" component={AddCardScreen} />
             <Stack.Screen name="CardDetail" component={CardDetailScreen} />
-          </>
-        ) : (
-          <>
-            <Stack.Screen name="Login" component={LoginScreen} />
-            <Stack.Screen name="Register" component={RegisterScreen} />
           </>
         )}
       </Stack.Navigator>

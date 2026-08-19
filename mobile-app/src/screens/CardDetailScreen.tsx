@@ -13,7 +13,9 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { useCardStore } from '../store/cardStore';
+import { useWalletStore } from '../store/walletStore';
 import { supabase } from '../config/supabase';
+import { decryptField } from '../services/crypto';
 import { dataErrorMessage } from '../utils/errorMessages';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { formatExpiryDate } from '../utils/expiryDate';
@@ -28,8 +30,12 @@ const FALLBACK_CARD_COLOR = '#6c47ff';
 export default function CardDetailScreen({ navigation, route }: Props) {
   const { cardId } = route.params;
   const { cards, deleteCard } = useCardStore();
+  const walletKey = useWalletStore((state) => state.key);
   const [loading, setLoading] = useState(false);
   const [revealed, setRevealed] = useState(false);
+  // Holds the decrypted number only while it is on screen. The store keeps
+  // ciphertext, so nothing is in memory in the clear until you authenticate.
+  const [revealedCardNumber, setRevealedCardNumber] = useState('');
 
   const card = cards.find((c) => c.id === cardId);
 
@@ -69,11 +75,34 @@ export default function CardDetailScreen({ navigation, route }: Props) {
         disableDeviceFallback: false,
       });
 
-      if (result.success) {
-        setRevealed(true);
-      } else if (result.error !== 'user_cancel' && result.error !== 'system_cancel') {
-        Alert.alert('Authentication failed', 'Could not verify your identity');
+      if (!result.success) {
+        if (result.error !== 'user_cancel' && result.error !== 'system_cancel') {
+          Alert.alert('Authentication failed', 'Could not verify your identity');
+        }
+        return;
       }
+
+      // Decrypt only now. Previously this gate was cosmetic: the plaintext was
+      // already in the store from the moment the list loaded, and `revealed`
+      // merely toggled whether it was rendered.
+      if (card.card_number_encrypted) {
+        if (!walletKey) {
+          Alert.alert('Wallet locked', 'Unlock your wallet to reveal card details.');
+          return;
+        }
+
+        try {
+          setRevealedCardNumber(decryptField(card.card_number_encrypted, walletKey));
+        } catch {
+          Alert.alert(
+            'Could not decrypt',
+            'This card was saved with a different wallet passphrase.'
+          );
+          return;
+        }
+      }
+
+      setRevealed(true);
     } catch (error) {
       Alert.alert('Error', 'Biometric authentication is not available on this device');
     }
@@ -192,7 +221,7 @@ export default function CardDetailScreen({ navigation, route }: Props) {
           {card.card_number_encrypted && (
             <InfoRow
               label="Card Number"
-              value={revealed ? card.card_number_encrypted : '**** **** **** ****'}
+              value={revealed ? revealedCardNumber : '**** **** **** ****'}
             />
           )}
         </>
