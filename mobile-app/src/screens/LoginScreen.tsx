@@ -102,8 +102,8 @@ export default function LoginScreen({ navigation }: Props) {
       if (error) {
         Alert.alert('Login failed', authErrorMessage(error));
       }
-      // On success there is nothing to navigate to: App.tsx observes the new
-      // session via onAuthStateChange and swaps the navigator to the app stack.
+      // On success there is nothing to navigate to: AppNavigator observes the
+      // new session via onAuthStateChange and swaps in the app stack.
     } catch (error) {
       Alert.alert('Login failed', authErrorMessage(error));
     } finally {

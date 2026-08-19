@@ -115,8 +115,8 @@ export default function RegisterScreen({ navigation }: Props) {
       }
 
       if (data.session) {
-        // Signed in immediately. App.tsx picks up the session and swaps the
-        // navigator, so there is nothing to navigate to here.
+        // Signed in immediately. AppNavigator picks up the session and swaps
+        // in the app stack, so there is nothing to navigate to here.
         return;
       }
 
