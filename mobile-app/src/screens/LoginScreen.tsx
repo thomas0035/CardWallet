@@ -17,9 +17,8 @@ import {
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
-import { useAuthStore } from '../store/authStore';
-import { api } from '../services/apiService';
-import * as SecureStore from 'expo-secure-store';
+import { supabase } from '../config/supabase';
+import { authErrorMessage } from '../utils/errorMessages';
 import { MaterialIcons } from '@expo/vector-icons';
 
 type Props = {
@@ -35,7 +34,6 @@ export default function LoginScreen({ navigation }: Props) {
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const translateY = useRef(new Animated.Value(0)).current;
   const headerOpacity = useRef(new Animated.Value(1)).current;
-  const setAuth = useAuthStore((state) => state.setAuth);
 
   useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -85,34 +83,29 @@ export default function LoginScreen({ navigation }: Props) {
     };
   }, [headerOpacity, translateY]);
 
-  const isValidGmail = (value: string) => {
-    return value.toLowerCase().endsWith('@gmail.com');
-  };
-
   const handleLogin = async () => {
-    if (!email || !password) {
+    // Note: there is deliberately no @gmail.com check here. The old one locked
+    // out anyone who registered with a different provider, because the register
+    // screen never enforced the same rule. Supabase validates the address.
+    if (!email.trim() || !password) {
       Alert.alert('Error', 'Please fill in all fields');
-      return;
-    }
-
-    if (!isValidGmail(email)) {
-      Alert.alert('Error', 'Please enter a valid Gmail address (@gmail.com)');
       return;
     }
 
     setLoading(true);
     try {
-      const data = await api.post('/api/auth/login', { email, password });
+      const { error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
 
-      if (data.token) {
-        await SecureStore.setItemAsync('token', data.token);
-        setAuth(data.user, data.token);
-        navigation.replace('Home');
-      } else {
-        Alert.alert('Error', data.error || 'Login failed');
+      if (error) {
+        Alert.alert('Login failed', authErrorMessage(error));
       }
+      // On success there is nothing to navigate to: App.tsx observes the new
+      // session via onAuthStateChange and swaps the navigator to the app stack.
     } catch (error) {
-      Alert.alert('Error', 'Something went wrong');
+      Alert.alert('Login failed', authErrorMessage(error));
     } finally {
       setLoading(false);
     }

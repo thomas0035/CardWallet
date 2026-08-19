@@ -17,9 +17,8 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
-import { api } from '../services/apiService';
-import * as SecureStore from 'expo-secure-store';
-import { useAuthStore } from '../store/authStore';
+import { supabase } from '../config/supabase';
+import { authErrorMessage } from '../utils/errorMessages';
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Register'>;
@@ -36,7 +35,6 @@ export default function RegisterScreen({ navigation }: Props) {
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const translateY = useRef(new Animated.Value(0)).current;
   const headerOpacity = useRef(new Animated.Value(1)).current;
-  const setAuth = useAuthStore((state) => state.setAuth);
 
   useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -87,7 +85,7 @@ export default function RegisterScreen({ navigation }: Props) {
   }, [headerOpacity, translateY]);
 
   const handleRegister = async () => {
-    if (!email || !password || !confirmPassword) {
+    if (!email.trim() || !password || !confirmPassword) {
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
@@ -97,19 +95,39 @@ export default function RegisterScreen({ navigation }: Props) {
       return;
     }
 
+    // Supabase enforces this server-side too, but catching it here saves a
+    // round trip and gives a clearer message.
+    if (password.length < 8) {
+      Alert.alert('Error', 'Use a password of at least 8 characters');
+      return;
+    }
+
     setLoading(true);
     try {
-      const data = await api.post('/api/auth/register', { email, password });
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+      });
 
-      if (data.token) {
-        await SecureStore.setItemAsync('token', data.token);
-        setAuth(data.user, data.token);
-        navigation.replace('Home');
-      } else {
-        Alert.alert('Error', data.error || 'Registration failed');
+      if (error) {
+        Alert.alert('Registration failed', authErrorMessage(error));
+        return;
       }
+
+      if (data.session) {
+        // Signed in immediately. App.tsx picks up the session and swaps the
+        // navigator, so there is nothing to navigate to here.
+        return;
+      }
+
+      // No session means email confirmation is switched on for this project.
+      Alert.alert(
+        'Almost there',
+        'Check your inbox and confirm your email address, then sign in.',
+        [{ text: 'OK', onPress: () => navigation.replace('Login') }]
+      );
     } catch (error) {
-      Alert.alert('Error', String(error));
+      Alert.alert('Registration failed', authErrorMessage(error));
     } finally {
       setLoading(false);
     }

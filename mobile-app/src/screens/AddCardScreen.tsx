@@ -16,9 +16,16 @@ import {
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../navigation/AppNavigator';
-import { api } from '../services/apiService';
+import { supabase } from '../config/supabase';
 import { useCardStore } from '../store/cardStore';
 import { formatExpiryDate } from '../utils/expiryDate';
+import { dataErrorMessage } from '../utils/errorMessages';
+import {
+  isBlank,
+  isValidCardNumber,
+  isValidExpiryDate,
+  normalizeCardNumber,
+} from '../utils/validation';
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'AddCard'>;
@@ -104,7 +111,6 @@ export default function AddCardScreen({ navigation, route }: Props) {
   // Debit/Credit fields
   const [cardHolderName, setCardHolderName] = useState('');
   const [cardNumber, setCardNumber] = useState('');
-  const [cvv, setCvv] = useState('');
   const [expiryDate, setExpiryDate] = useState('');
 
   // ID fields
@@ -153,23 +159,40 @@ export default function AddCardScreen({ navigation, route }: Props) {
     setCardLabel(editingCard.card_name);
     setSelectedHue(nextHue < 0 ? nextHue + 360 : nextHue);
     setSelectedColor(editingCard.card_color || hueToHex(DEFAULT_CARD_HUE));
-    setCardHolderName(editingCard.card_holder_name || '');
-    setCardNumber(editingCard.card_number_encrypted || '');
-    setCvv(editingCard.cvv_encrypted || '');
-    setExpiryDate(editingCard.expiry_date || '');
-    setIdName(editingCard.card_holder_name || '');
-    setIdInstitution(editingCard.institution || '');
-    setIdNumber(editingCard.id_number || '');
-    setIdNotes(editingCard.notes || '');
-    setMemberName(editingCard.card_holder_name || '');
-    setClubName(editingCard.club_name || '');
-    setMembershipId(editingCard.id_number || '');
-    setMembershipNotes(editingCard.notes || '');
-    setBusinessName(editingCard.card_holder_name || '');
-    setBusinessInstitution(editingCard.institution || '');
-    setDesignation(editingCard.designation || '');
-    setPhone(editingCard.phone || '');
-    setBusinessEmail(editingCard.business_email || '');
+
+    // Only populate the field set belonging to this card's own type.
+    //
+    // Previously all four sets were filled from the same columns regardless of
+    // type — every name from card_holder_name, both ID and Membership numbers
+    // from id_number. Switching type mid-edit then carried those values across
+    // and wrote them into the wrong columns on save.
+    switch (editingCard.card_type) {
+      case 'Debit':
+      case 'Credit':
+        setCardHolderName(editingCard.card_holder_name || '');
+        setCardNumber(editingCard.card_number_encrypted || '');
+        setExpiryDate(editingCard.expiry_date || '');
+        break;
+      case 'ID':
+        setIdName(editingCard.card_holder_name || '');
+        setIdInstitution(editingCard.institution || '');
+        setIdNumber(editingCard.id_number || '');
+        setIdNotes(editingCard.notes || '');
+        break;
+      case 'Membership':
+        setMemberName(editingCard.card_holder_name || '');
+        setClubName(editingCard.club_name || '');
+        setMembershipId(editingCard.id_number || '');
+        setMembershipNotes(editingCard.notes || '');
+        break;
+      case 'Business':
+        setBusinessName(editingCard.card_holder_name || '');
+        setBusinessInstitution(editingCard.institution || '');
+        setDesignation(editingCard.designation || '');
+        setPhone(editingCard.phone || '');
+        setBusinessEmail(editingCard.business_email || '');
+        break;
+    }
   }, [editingCard]);
 
   const handleExpiryDateChange = (value: string) => {
@@ -206,99 +229,114 @@ export default function AddCardScreen({ navigation, route }: Props) {
   });
 
   const handleAddCard = async () => {
-    if (!cardLabel) {
+    // All required-field checks below use isBlank rather than a falsy test, so
+    // a field containing only spaces no longer counts as filled in.
+    if (isBlank(cardLabel)) {
       Alert.alert('Error', 'Please enter a Card Label');
       return;
     }
 
+    let payload: Record<string, unknown> = {
+      card_type: cardType,
+      card_name: cardLabel.trim(),
+      card_color: selectedColor,
+    };
+
+    if (cardType === 'Debit' || cardType === 'Credit') {
+      if (isBlank(cardHolderName) || isBlank(cardNumber)) {
+        Alert.alert('Error', 'Please fill in all required fields');
+        return;
+      }
+      if (!isValidCardNumber(cardNumber)) {
+        Alert.alert(
+          'Error',
+          'That card number is not valid. Check the digits and try again.'
+        );
+        return;
+      }
+      if (!isBlank(expiryDate) && !isValidExpiryDate(expiryDate)) {
+        Alert.alert('Error', 'Enter the expiry as MM/YY, and not in the past.');
+        return;
+      }
+
+      const digits = normalizeCardNumber(cardNumber);
+      payload = {
+        ...payload,
+        card_holder_name: cardHolderName.trim(),
+        last_four_digits: digits.slice(-4),
+        // Still plaintext at this point. Phase 5 encrypts it on-device before
+        // it reaches this payload; the column name is aspirational until then.
+        card_number_encrypted: digits,
+        expiry_date: expiryDate.trim() || null,
+      };
+    } else if (cardType === 'ID') {
+      if (isBlank(idName) || isBlank(idInstitution)) {
+        Alert.alert('Error', 'Please fill in all required fields');
+        return;
+      }
+      payload = {
+        ...payload,
+        card_holder_name: idName.trim(),
+        institution: idInstitution.trim(),
+        id_number: idNumber.trim() || null,
+        notes: idNotes.trim() || null,
+      };
+    } else if (cardType === 'Membership') {
+      if (isBlank(memberName) || isBlank(clubName)) {
+        Alert.alert('Error', 'Please fill in all required fields');
+        return;
+      }
+      payload = {
+        ...payload,
+        card_holder_name: memberName.trim(),
+        club_name: clubName.trim(),
+        id_number: membershipId.trim() || null,
+        notes: membershipNotes.trim() || null,
+      };
+    } else if (cardType === 'Business') {
+      if (isBlank(businessName) || isBlank(businessInstitution)) {
+        Alert.alert('Error', 'Please fill in all required fields');
+        return;
+      }
+      payload = {
+        ...payload,
+        card_holder_name: businessName.trim(),
+        institution: businessInstitution.trim(),
+        designation: designation.trim() || null,
+        phone: phone.trim() || null,
+        business_email: businessEmail.trim() || null,
+      };
+    }
+
     setLoading(true);
     try {
-      let payload: any = {
-        card_type: cardType,
-        card_name: cardLabel,
-        card_color: selectedColor,
-      };
+      // user_id is not sent: the column defaults to auth.uid() and the RLS
+      // policies reject anything else, so ownership is set by Postgres.
+      const { data, error } = isEditing
+        ? await supabase
+            .from('cards')
+            .update(payload)
+            .eq('id', editingCardId!)
+            .select()
+            .single()
+        : await supabase.from('cards').insert(payload).select().single();
 
-      if (cardType === 'Debit' || cardType === 'Credit') {
-        if (!cardHolderName || !cardNumber) {
-          Alert.alert('Error', 'Please fill in all required fields');
-          setLoading(false);
-          return;
-        }
-        if (cardNumber.length < 4) {
-          Alert.alert('Error', 'Please enter a valid card number');
-          setLoading(false);
-          return;
-        }
-        const lastFour = cardNumber.replace(/\s/g, '').slice(-4);
-        payload = {
-          ...payload,
-          card_holder_name: cardHolderName,
-          last_four_digits: lastFour,
-          card_number_encrypted: cardNumber,
-          cvv_encrypted: cvv,
-          expiry_date: expiryDate,
-        };
-      } else if (cardType === 'ID') {
-        if (!idName || !idInstitution) {
-          Alert.alert('Error', 'Please fill in all required fields');
-          setLoading(false);
-          return;
-        }
-        payload = {
-          ...payload,
-          card_holder_name: idName,
-          institution: idInstitution,
-          id_number: idNumber,
-          notes: idNotes,
-        };
-      } else if (cardType === 'Membership') {
-        if (!memberName || !clubName) {
-          Alert.alert('Error', 'Please fill in all required fields');
-          setLoading(false);
-          return;
-        }
-        payload = {
-          ...payload,
-          card_holder_name: memberName,
-          club_name: clubName,
-          id_number: membershipId,
-          notes: membershipNotes,
-        };
-      } else if (cardType === 'Business') {
-        if (!businessName || !businessInstitution) {
-          Alert.alert('Error', 'Please fill in all required fields');
-          setLoading(false);
-          return;
-        }
-        payload = {
-          ...payload,
-          card_holder_name: businessName,
-          institution: businessInstitution,
-          designation: designation,
-          phone: phone,
-          business_email: businessEmail,
-        };
-      }
+      if (error) throw error;
 
-      const data = isEditing
-        ? await api.put(`/api/cards/${editingCardId}`, payload)
-        : await api.post('/api/cards', payload, true);
-
-      if (data.id) {
-        if (isEditing) {
-          updateCard(data);
-        } else {
-          addCard(data);
-        }
-        Alert.alert('Success', `Card ${isEditing ? 'updated' : 'added'} successfully!`, [
-          { text: 'OK', onPress: () => navigation.goBack() },
-        ]);
+      if (isEditing) {
+        updateCard(data);
       } else {
-        Alert.alert('Error', data.error || `Failed to ${isEditing ? 'update' : 'add'} card`);
+        addCard(data);
       }
+
+      Alert.alert('Success', `Card ${isEditing ? 'updated' : 'added'} successfully!`, [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
     } catch (error) {
-      Alert.alert('Error', 'Something went wrong');
+      Alert.alert(
+        `Failed to ${isEditing ? 'update' : 'add'} card`,
+        dataErrorMessage(error)
+      );
     } finally {
       setLoading(false);
     }
@@ -338,18 +376,12 @@ export default function AddCardScreen({ navigation, route }: Props) {
       keyboardType="numeric"
       maxLength={5}
     />
-    <Text style={styles.label}>CVV (optional)</Text>
-    <TextInput
-      style={styles.input}
-      placeholderTextColor="#888"
-      placeholder=""
-      value={cvv}
-      onChangeText={setCvv}
-      onFocus={(event) => handleInputFocus(event.target)}
-      keyboardType="numeric"
-      maxLength={3}
-      secureTextEntry
-    />
+    {/*
+      The CVV input was removed deliberately. PCI-DSS prohibits storing the
+      CVV after authorization, and it was being written to the database in
+      plaintext. It also gains nothing here: a stored CVV only helps someone
+      who already has the card number.
+    */}
   </>
 );
 

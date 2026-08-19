@@ -13,7 +13,8 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { useCardStore } from '../store/cardStore';
-import { api } from '../services/apiService';
+import { supabase } from '../config/supabase';
+import { dataErrorMessage } from '../utils/errorMessages';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { formatExpiryDate } from '../utils/expiryDate';
 
@@ -44,17 +45,37 @@ export default function CardDetailScreen({ navigation, route }: Props) {
 
   const handleReveal = async () => {
     try {
+      // Check the device can actually do this before prompting.
+      //
+      // Without these checks, a phone with no enrolled biometric or passcode
+      // gets `{ success: false }` rather than an exception, which showed
+      // "Could not verify your identity" and left the user permanently unable
+      // to see their own card — with no way past it.
+      const hasHardware = await LocalAuthentication.hasHardwareAsync();
+      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+
+      if (!hasHardware || !isEnrolled) {
+        Alert.alert(
+          'Screen lock required',
+          'Set up a fingerprint, face unlock, or PIN on this device to reveal card details.'
+        );
+        return;
+      }
+
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: 'Authenticate to reveal card details',
         fallbackLabel: 'Use passcode',
+        // Allow the device PIN when biometrics fail or are unavailable.
+        disableDeviceFallback: false,
       });
+
       if (result.success) {
         setRevealed(true);
-      } else {
+      } else if (result.error !== 'user_cancel' && result.error !== 'system_cancel') {
         Alert.alert('Authentication failed', 'Could not verify your identity');
       }
     } catch (error) {
-      Alert.alert('Error', 'Biometric authentication not available');
+      Alert.alert('Error', 'Biometric authentication is not available on this device');
     }
   };
 
@@ -70,11 +91,18 @@ export default function CardDetailScreen({ navigation, route }: Props) {
           onPress: async () => {
             setLoading(true);
             try {
-              await api.delete(`/api/cards/${cardId}`);
+              // RLS restricts this to your own rows, so no user_id filter.
+              const { error } = await supabase
+                .from('cards')
+                .delete()
+                .eq('id', cardId);
+
+              if (error) throw error;
+
               deleteCard(cardId);
               navigation.goBack();
             } catch (error) {
-              Alert.alert('Error', 'Failed to delete card');
+              Alert.alert('Failed to delete card', dataErrorMessage(error));
             } finally {
               setLoading(false);
             }
@@ -167,12 +195,6 @@ export default function CardDetailScreen({ navigation, route }: Props) {
               value={revealed ? card.card_number_encrypted : '**** **** **** ****'}
             />
           )}
-          {card.cvv_encrypted && (
-            <InfoRow
-              label="CVV"
-              value={revealed ? card.cvv_encrypted : '***'}
-            />
-          )}
         </>
       );
     }
@@ -240,7 +262,7 @@ export default function CardDetailScreen({ navigation, route }: Props) {
   // Check if this card type has sensitive info to reveal
   const hasSensitiveInfo = () => {
     if (card.card_type === 'Debit' || card.card_type === 'Credit') {
-      return !!(card.card_number_encrypted || card.cvv_encrypted);
+      return !!card.card_number_encrypted;
     }
     if (card.card_type === 'ID' || card.card_type === 'Membership') {
       return !!card.id_number;
