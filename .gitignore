@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Secrets — never commit these
+.env
+.env.*
+!.env.example
+
+# Build output
+backend/dist/
+dist/
+web-build/
+
+# Expo
+.expo/
+.metro-health-check*
+expo-env.d.ts
+
+# Native build artifacts / signing material
+*.jks
+*.p8
+*.p12
+*.key
+*.pem
+*.mobileprovision
+/android
+/ios
+
+# Logs
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# TypeScript
+*.tsbuildinfo
+
+# Editor / OS
+.DS_Store
+Thumbs.db

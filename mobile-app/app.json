@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "CardWallet",
+    "slug": "cardwallet",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0a0a0a"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0a0a0a"
+      },
+      "package": "com.thomasbiju.cardwallet"
+    },
+    "platforms": [
+      "android"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "7226b7dc-1510-41de-884f-6f711654835f"
+      }
+    },
+    "owner": "kingdome",
+    "plugins": [
+      "expo-font",
+      "expo-secure-store",
+      "expo-sqlite"
+    ]
+  }
+}
