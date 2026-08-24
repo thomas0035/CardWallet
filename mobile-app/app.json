@@ -29,8 +29,7 @@
     "owner": "kingdome",
     "plugins": [
       "expo-font",
-      "expo-secure-store",
-      "expo-sqlite"
+      "expo-secure-store"
     ]
   }
 }
