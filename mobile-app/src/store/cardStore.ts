@@ -29,6 +29,8 @@ export interface Card {
   business_email: string | null;
 
   notes: string | null;
+  /** Manual display order, ascending. See supabase/003_add_sort_order.sql. */
+  sort_order: number;
   created_at: string;
   updated_at: string;
 }
@@ -39,6 +41,7 @@ interface CardState {
   addCard: (card: Card) => void;
   updateCard: (card: Card) => void;
   deleteCard: (id: string) => void;
+  deleteCards: (ids: string[]) => void;
 }
 
 export const useCardStore = create<CardState>((set) => ({
@@ -52,4 +55,9 @@ export const useCardStore = create<CardState>((set) => ({
     })),
   deleteCard: (id) =>
     set((state) => ({ cards: state.cards.filter((c) => c.id !== id) })),
+  deleteCards: (ids) =>
+    set((state) => {
+      const removing = new Set(ids);
+      return { cards: state.cards.filter((c) => !removing.has(c.id)) };
+    }),
 }));

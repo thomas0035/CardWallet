@@ -1,13 +1,18 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
-  FlatList,
   TouchableOpacity,
+  Pressable,
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
+  ScrollView,
+  Animated,
+  PanResponder,
+  Alert,
 } from 'react-native';
+import { MaterialIcons } from '@expo/vector-icons';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
 import { RootStackParamList } from '../navigation/AppNavigator';
@@ -21,13 +26,22 @@ type Props = {
 
 const FALLBACK_CARD_COLOR = '#6c47ff';
 
+/** Card height (180) plus its bottom margin (16). One row's worth of travel. */
+const CARD_HEIGHT = 180;
+const CARD_GAP = 16;
+const ITEM_PITCH = CARD_HEIGHT + CARD_GAP;
+
+/**
+ * Movement below this is treated as a long-press-and-release rather than a
+ * drag, so a slightly shaky finger still opens selection mode.
+ */
+const DRAG_SLOP = 12;
+
 /** The subtitle line on a card tile, which differs per card type. */
 function cardSubtitle(card: Card): string {
   switch (card.card_type) {
     case 'Debit':
     case 'Credit':
-      // Previously every type rendered this, so ID and Membership cards showed
-      // the literal text "**** **** **** null".
       return card.last_four_digits
         ? `**** **** **** ${card.last_four_digits}`
         : '•••• •••• •••• ••••';
@@ -46,22 +60,38 @@ export default function HomeScreen({ navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { cards, setCards } = useCardStore();
+  const { cards, setCards, deleteCards } = useCardStore();
+
+  // Selection
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleting, setDeleting] = useState(false);
+
+  // Drag-to-reorder
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [targetIndex, setTargetIndex] = useState(0);
+  const dragY = useRef(new Animated.Value(0)).current;
+
+  // Refs mirror the drag state because the PanResponder is created once and
+  // would otherwise close over stale values.
+  const dragRef = useRef<{ id: string; index: number } | null>(null);
+  const movedRef = useRef(false);
+  const targetRef = useRef(0);
+  const cardsRef = useRef<Card[]>(cards);
+  cardsRef.current = cards;
 
   const fetchCards = useCallback(async () => {
     try {
-      // No user_id filter needed — the RLS policies in supabase/schema.sql
-      // restrict this to the signed-in user's rows, enforced by Postgres.
+      // RLS restricts this to the signed-in user's rows. created_at is the
+      // tiebreaker so ordering stays stable if two rows share a sort_order.
       const { data, error: queryError } = await supabase
         .from('cards')
         .select('*')
+        .order('sort_order', { ascending: true })
         .order('created_at', { ascending: false });
 
       if (queryError) throw queryError;
 
-      // Guard the type rather than trusting the response. The old apiService
-      // never checked response.ok, so an error body could be handed to
-      // setCards as if it were a list.
       setCards(Array.isArray(data) ? data : []);
       setError(null);
     } catch (err) {
@@ -72,8 +102,6 @@ export default function HomeScreen({ navigation }: Props) {
     }
   }, [setCards]);
 
-  // Refetch whenever the screen regains focus, so edits made elsewhere (or on
-  // another device) show up without restarting the app.
   useFocusEffect(
     useCallback(() => {
       fetchCards();
@@ -86,43 +114,321 @@ export default function HomeScreen({ navigation }: Props) {
   }, [fetchCards]);
 
   const handleLogout = async () => {
-    // Clear the cards first: signOut swaps the navigator, and stale rows from
-    // the previous session must not be visible to whoever signs in next.
     setCards([]);
     await supabase.auth.signOut();
   };
 
-  const renderCard = ({ item }: { item: Card }) => {
-    const cardColor = item.card_color || FALLBACK_CARD_COLOR;
+  // -------------------------------------------------------------------------
+  // Selection
+  // -------------------------------------------------------------------------
+
+  const exitSelection = useCallback(() => {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+  }, []);
+
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      // Leaving selection mode when the last card is deselected keeps the
+      // header from sitting in "0 selected" with nothing to act on.
+      if (next.size === 0) setSelectionMode(false);
+      return next;
+    });
+  }, []);
+
+  const handleCardPress = useCallback(
+    (card: Card) => {
+      if (selectionMode) {
+        toggleSelected(card.id);
+      } else {
+        navigation.navigate('CardDetail', { cardId: card.id });
+      }
+    },
+    [selectionMode, toggleSelected, navigation]
+  );
+
+  const handleDeleteSelected = () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+
+    Alert.alert(
+      ids.length === 1 ? 'Delete card' : `Delete ${ids.length} cards`,
+      ids.length === 1
+        ? 'This cannot be undone.'
+        : `These ${ids.length} cards will be deleted. This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeleting(true);
+            try {
+              const { error: deleteError } = await supabase
+                .from('cards')
+                .delete()
+                .in('id', ids);
+
+              if (deleteError) throw deleteError;
+
+              deleteCards(ids);
+              exitSelection();
+            } catch (err) {
+              Alert.alert('Failed to delete', dataErrorMessage(err));
+            } finally {
+              setDeleting(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // -------------------------------------------------------------------------
+  // Reordering
+  // -------------------------------------------------------------------------
+
+  /**
+   * Write the new positions back.
+   *
+   * The whole list is renumbered 0..n-1 rather than patching the moved card
+   * alone, which keeps the values dense and avoids ties accumulating over
+   * time. The list is personal-sized, so the write count is not a concern.
+   */
+  const persistOrder = useCallback(
+    async (ordered: Card[]) => {
+      const changed = ordered
+        .map((card, index) => ({ card, index }))
+        .filter(({ card, index }) => card.sort_order !== index);
+
+      if (changed.length === 0) return;
+
+      try {
+        await Promise.all(
+          changed.map(({ card, index }) =>
+            supabase.from('cards').update({ sort_order: index }).eq('id', card.id)
+          )
+        );
+      } catch (err) {
+        Alert.alert('Could not save the new order', dataErrorMessage(err));
+        // Pull the authoritative order back so the screen cannot drift from
+        // what is actually stored.
+        fetchCards();
+      }
+    },
+    [fetchCards]
+  );
+
+  const endDrag = useCallback(() => {
+    dragRef.current = null;
+    movedRef.current = false;
+    dragY.setValue(0);
+    setDraggingId(null);
+  }, [dragY]);
+
+  const commitDrag = useCallback(() => {
+    const drag = dragRef.current;
+    if (!drag) return;
+
+    const from = drag.index;
+    const to = targetRef.current;
+
+    if (from !== to) {
+      const next = [...cardsRef.current];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+
+      // Update local sort_order immediately so the list does not flicker back
+      // to the old order while the writes are in flight.
+      const renumbered = next.map((card, index) => ({ ...card, sort_order: index }));
+      setCards(renumbered);
+      persistOrder(renumbered);
+    }
+
+    endDrag();
+  }, [setCards, persistOrder, endDrag]);
+
+  const beginDrag = useCallback(
+    (card: Card, index: number) => {
+      dragRef.current = { id: card.id, index };
+      movedRef.current = false;
+      targetRef.current = index;
+      setTargetIndex(index);
+      dragY.setValue(0);
+      setDraggingId(card.id);
+    },
+    [dragY]
+  );
+
+  /**
+   * Long-press then release without moving means "select this card".
+   *
+   * Deferred by a tick because the Pressable's press-out also fires the moment
+   * the PanResponder claims the touch mid-drag; by the time this runs,
+   * movedRef tells the two apart.
+   */
+  const handlePressOut = useCallback(
+    (card: Card) => {
+      setTimeout(() => {
+        if (dragRef.current?.id === card.id && !movedRef.current) {
+          setSelectionMode(true);
+          setSelectedIds((previous) => new Set(previous).add(card.id));
+          endDrag();
+        }
+      }, 0);
+    },
+    [endDrag]
+  );
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        // Never claim the touch on start, or the list could not be scrolled.
+        onStartShouldSetPanResponder: () => false,
+        // Only take over once a long-press has armed a card for dragging.
+        onMoveShouldSetPanResponder: () => dragRef.current !== null,
+
+        onPanResponderMove: (_event, gesture) => {
+          const drag = dragRef.current;
+          if (!drag) return;
+
+          if (Math.abs(gesture.dy) > DRAG_SLOP) movedRef.current = true;
+
+          dragY.setValue(gesture.dy);
+
+          const total = cardsRef.current.length;
+          const offset = Math.round(gesture.dy / ITEM_PITCH);
+          const next = Math.min(Math.max(drag.index + offset, 0), total - 1);
+
+          if (next !== targetRef.current) {
+            targetRef.current = next;
+            setTargetIndex(next);
+          }
+        },
+
+        onPanResponderRelease: (_event, gesture) => {
+          // A drag that never really moved is the same gesture as a
+          // long-press-and-release, so treat it as a selection.
+          if (!movedRef.current && Math.abs(gesture.dy) <= DRAG_SLOP) {
+            const drag = dragRef.current;
+            if (drag) {
+              setSelectionMode(true);
+              setSelectedIds((previous) => new Set(previous).add(drag.id));
+            }
+            endDrag();
+            return;
+          }
+          commitDrag();
+        },
+
+        onPanResponderTerminate: () => endDrag(),
+      }),
+    [dragY, commitDrag, endDrag]
+  );
+
+  // -------------------------------------------------------------------------
+  // Render
+  // -------------------------------------------------------------------------
+
+  const renderCard = (card: Card, index: number) => {
+    const isDragging = draggingId === card.id;
+    const isSelected = selectedIds.has(card.id);
+
+    // While one card is lifted, the others slide to open a gap at the target.
+    let shift = 0;
+    if (draggingId && !isDragging) {
+      const from = dragRef.current?.index ?? index;
+      if (from < targetIndex && index > from && index <= targetIndex) {
+        shift = -ITEM_PITCH;
+      } else if (from > targetIndex && index >= targetIndex && index < from) {
+        shift = ITEM_PITCH;
+      }
+    }
 
     return (
-      <TouchableOpacity
-        style={[styles.card, { backgroundColor: cardColor }]}
-        onPress={() => navigation.navigate('CardDetail', { cardId: item.id })}>
-        <Text style={styles.cardType}>{item.card_type}</Text>
-        <Text style={styles.cardNumber}>{cardSubtitle(item)}</Text>
-        <View style={styles.cardBottom}>
-          <Text style={styles.cardHolder}>{item.card_holder_name}</Text>
-          <Text style={styles.cardName}>{item.card_name}</Text>
-        </View>
-      </TouchableOpacity>
+      <Animated.View
+        key={card.id}
+        style={[
+          styles.cardWrapper,
+          isDragging
+            ? {
+                transform: [{ translateY: dragY }, { scale: 1.04 }],
+                zIndex: 10,
+                elevation: 10,
+                shadowColor: '#000',
+                shadowOpacity: 0.5,
+                shadowRadius: 16,
+                shadowOffset: { width: 0, height: 8 },
+              }
+            : { transform: [{ translateY: shift }] },
+        ]}>
+        <Pressable
+          style={[
+            styles.card,
+            { backgroundColor: card.card_color || FALLBACK_CARD_COLOR },
+            isSelected && styles.cardSelected,
+          ]}
+          onPress={() => handleCardPress(card)}
+          onLongPress={() => beginDrag(card, index)}
+          onPressOut={() => handlePressOut(card)}
+          delayLongPress={350}>
+          <View style={styles.cardTopRow}>
+            <Text style={styles.cardType}>{card.card_type}</Text>
+            {selectionMode && (
+              <View style={[styles.checkbox, isSelected && styles.checkboxOn]}>
+                {isSelected && <MaterialIcons name="check" size={16} color="#fff" />}
+              </View>
+            )}
+          </View>
+          <Text style={styles.cardNumber}>{cardSubtitle(card)}</Text>
+          <View style={styles.cardBottom}>
+            <Text style={styles.cardHolder}>{card.card_holder_name}</Text>
+            <Text style={styles.cardName}>{card.card_name}</Text>
+          </View>
+        </Pressable>
+      </Animated.View>
     );
   };
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>My Cards</Text>
-        <TouchableOpacity onPress={handleLogout}>
-          <Text style={styles.logout}>Logout</Text>
-        </TouchableOpacity>
+        {selectionMode ? (
+          <>
+            <TouchableOpacity onPress={exitSelection} hitSlop={12}>
+              <MaterialIcons name="close" size={26} color="#fff" />
+            </TouchableOpacity>
+            <Text style={styles.title}>{selectedIds.size} selected</Text>
+            <TouchableOpacity
+              onPress={handleDeleteSelected}
+              disabled={deleting}
+              hitSlop={12}>
+              {deleting ? (
+                <ActivityIndicator color="#ff6b6b" />
+              ) : (
+                <MaterialIcons name="delete-outline" size={26} color="#ff6b6b" />
+              )}
+            </TouchableOpacity>
+          </>
+        ) : (
+          <>
+            <Text style={styles.title}>My Cards</Text>
+            <TouchableOpacity onPress={handleLogout}>
+              <Text style={styles.logout}>Logout</Text>
+            </TouchableOpacity>
+          </>
+        )}
       </View>
 
       {loading ? (
         <ActivityIndicator color="#6c47ff" size="large" />
       ) : error ? (
-        // A failed fetch used to fall through to the empty state, telling the
-        // user they had no cards when the request had simply failed.
         <View style={styles.emptyContainer}>
           <Text style={styles.errorText}>{error}</Text>
           <TouchableOpacity style={styles.retryButton} onPress={handleRefresh}>
@@ -135,28 +441,39 @@ export default function HomeScreen({ navigation }: Props) {
           <Text style={styles.emptySubtext}>Add your first card below</Text>
         </View>
       ) : (
-        <FlatList
-          data={cards}
-          renderItem={renderCard}
-          keyExtractor={(item) => item.id}
+        <ScrollView
+          // A plain ScrollView rather than a FlatList: the list is personal-
+          // sized, and virtualisation recycling rows fights the drag transforms.
           contentContainerStyle={styles.list}
           showsVerticalScrollIndicator={false}
+          scrollEnabled={!draggingId}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
               onRefresh={handleRefresh}
+              enabled={!draggingId}
               tintColor="#6c47ff"
               colors={['#6c47ff']}
             />
           }
-        />
+          {...panResponder.panHandlers}>
+          {cards.map(renderCard)}
+        </ScrollView>
       )}
 
-      <TouchableOpacity
-        style={styles.addButton}
-        onPress={() => navigation.navigate('AddCard')}>
-        <Text style={styles.addButtonText}>+ Add Card</Text>
-      </TouchableOpacity>
+      {!selectionMode && (
+        <TouchableOpacity
+          style={styles.addButton}
+          onPress={() => navigation.navigate('AddCard')}>
+          <Text style={styles.addButtonText}>+ Add Card</Text>
+        </TouchableOpacity>
+      )}
+
+      {draggingId && (
+        <View style={styles.dragHint} pointerEvents="none">
+          <Text style={styles.dragHintText}>Drag to reorder · release to select</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -186,12 +503,36 @@ const styles = StyleSheet.create({
   list: {
     paddingBottom: 100,
   },
+  cardWrapper: {
+    marginBottom: CARD_GAP,
+  },
   card: {
     borderRadius: 20,
     padding: 24,
-    marginBottom: 16,
-    height: 180,
+    height: CARD_HEIGHT,
     justifyContent: 'space-between',
+  },
+  cardSelected: {
+    borderWidth: 3,
+    borderColor: '#fff',
+  },
+  cardTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  checkbox: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.8)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxOn: {
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    borderColor: '#fff',
   },
   cardType: {
     color: 'rgba(255,255,255,0.7)',
@@ -269,5 +610,21 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  dragHint: {
+    position: 'absolute',
+    bottom: 32,
+    left: 24,
+    right: 24,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  dragHintText: {
+    color: '#888',
+    fontSize: 13,
   },
 });

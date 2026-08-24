@@ -330,6 +330,16 @@ export default function AddCardScreen({ navigation, route }: Props) {
       };
     }
 
+    if (!isEditing) {
+      // Sit below the current minimum so a new card appears at the top of the
+      // manual order. Reordering renumbers the whole list densely afterwards.
+      const lowest = cards.reduce(
+        (min, card) => Math.min(min, card.sort_order ?? 0),
+        0
+      );
+      payload.sort_order = lowest - 1;
+    }
+
     setLoading(true);
     try {
       // user_id is not sent: the column defaults to auth.uid() and the RLS

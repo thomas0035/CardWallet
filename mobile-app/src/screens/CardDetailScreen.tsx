@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
-  ActivityIndicator,
   ScrollView,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -14,9 +13,7 @@ import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { useCardStore } from '../store/cardStore';
 import { useWalletStore } from '../store/walletStore';
-import { supabase } from '../config/supabase';
 import { decryptField } from '../services/crypto';
-import { dataErrorMessage } from '../utils/errorMessages';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { formatExpiryDate } from '../utils/expiryDate';
 
@@ -29,9 +26,8 @@ const FALLBACK_CARD_COLOR = '#6c47ff';
 
 export default function CardDetailScreen({ navigation, route }: Props) {
   const { cardId } = route.params;
-  const { cards, deleteCard } = useCardStore();
+  const { cards } = useCardStore();
   const walletKey = useWalletStore((state) => state.key);
-  const [loading, setLoading] = useState(false);
   const [revealed, setRevealed] = useState(false);
   // Holds the decrypted number only while it is on screen. The store keeps
   // ciphertext, so nothing is in memory in the clear until you authenticate.
@@ -108,38 +104,8 @@ export default function CardDetailScreen({ navigation, route }: Props) {
     }
   };
 
-  const handleDelete = () => {
-    Alert.alert(
-      'Delete Card',
-      'Are you sure you want to delete this card?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            setLoading(true);
-            try {
-              // RLS restricts this to your own rows, so no user_id filter.
-              const { error } = await supabase
-                .from('cards')
-                .delete()
-                .eq('id', cardId);
-
-              if (error) throw error;
-
-              deleteCard(cardId);
-              navigation.goBack();
-            } catch (error) {
-              Alert.alert('Failed to delete card', dataErrorMessage(error));
-            } finally {
-              setLoading(false);
-            }
-          },
-        },
-      ]
-    );
-  };
+  // Deleting happens on the card list, not here: long-press a card to enter
+  // selection mode, tick as many as you like, then delete them together.
 
   // Dynamic card preview based on card type
   const renderCardPreview = () => {
@@ -335,16 +301,6 @@ export default function CardDetailScreen({ navigation, route }: Props) {
         </View>
       )}
 
-      <TouchableOpacity
-        style={styles.deleteButton}
-        onPress={handleDelete}
-        disabled={loading}>
-        {loading ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={styles.deleteButtonText}>Delete Card</Text>
-        )}
-      </TouchableOpacity>
     </ScrollView>
   );
 }
@@ -462,18 +418,6 @@ const styles = StyleSheet.create({
   },
   revealedText: {
     color: '#47ff9f',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  deleteButton: {
-    backgroundColor: '#ff3b30',
-    borderRadius: 12,
-    padding: 16,
-    alignItems: 'center',
-    marginBottom: 48,
-  },
-  deleteButtonText: {
-    color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
   },
