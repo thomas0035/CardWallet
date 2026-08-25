@@ -25,7 +25,30 @@ export type RootStackParamList = {
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
-const screenOptions = { headerShown: false } as const;
+/**
+ * Screens slide rather than cutting straight to the next one.
+ *
+ * native-stack defaults to the platform's own transition, which on Android
+ * reads as an abrupt swap. A slide of ~280ms is long enough to show where a
+ * screen came from without feeling sluggish.
+ */
+const screenOptions = {
+  headerShown: false,
+  animation: 'slide_from_right',
+  animationDuration: 280,
+  // Swiping back from a detail screen feels natural once screens slide.
+  gestureEnabled: true,
+} as const;
+
+/**
+ * Signing in or out swaps the whole stack, so a directional slide would look
+ * wrong. These cross-fade instead.
+ */
+const rootSwapOptions = {
+  headerShown: false,
+  animation: 'fade',
+  animationDuration: 220,
+} as const;
 
 function SplashScreen() {
   return (
@@ -110,7 +133,11 @@ export default function AppNavigator() {
       <Stack.Navigator screenOptions={screenOptions}>
         {!session ? (
           <>
-            <Stack.Screen name="Login" component={LoginScreen} />
+            <Stack.Screen
+              name="Login"
+              component={LoginScreen}
+              options={rootSwapOptions}
+            />
             <Stack.Screen name="Register" component={RegisterScreen} />
           </>
         ) : !walletKey ? (
@@ -120,10 +147,15 @@ export default function AppNavigator() {
           <Stack.Screen
             name="WalletLock"
             component={walletChecked ? WalletLockScreen : SplashScreen}
+            options={rootSwapOptions}
           />
         ) : (
           <>
-            <Stack.Screen name="Home" component={HomeScreen} />
+            <Stack.Screen
+              name="Home"
+              component={HomeScreen}
+              options={rootSwapOptions}
+            />
             <Stack.Screen name="AddCard" component={AddCardScreen} />
             <Stack.Screen name="CardDetail" component={CardDetailScreen} />
           </>

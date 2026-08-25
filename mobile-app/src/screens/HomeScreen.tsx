@@ -87,6 +87,30 @@ function DraggableCard({
   const armedRef = useRef(false);
   const movedRef = useRef(false);
 
+  // Neighbours ease into their new places instead of teleporting a full row
+  // the instant the drag target changes.
+  const shiftAnim = useRef(new Animated.Value(0)).current;
+  // Drives the lift: shadow and inset, animated so picking a card up and
+  // putting it down both read as movement rather than a state flip.
+  const liftAnim = useRef(new Animated.Value(0)).current;
+
+  React.useEffect(() => {
+    Animated.spring(shiftAnim, {
+      toValue: shift,
+      useNativeDriver: true,
+      friction: 12,
+      tension: 90,
+    }).start();
+  }, [shift, shiftAnim]);
+
+  React.useEffect(() => {
+    Animated.timing(liftAnim, {
+      toValue: isDragging ? 1 : 0,
+      duration: 160,
+      useNativeDriver: true,
+    }).start();
+  }, [isDragging, liftAnim]);
+
   const clearTimer = () => {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
@@ -167,23 +191,37 @@ function DraggableCard({
         styles.cardWrapper,
         isDragging
           ? {
-              transform: [{ translateY: dragY }, { scale: 1.04 }],
+              // Deliberately no scale. Growing the card pushed it past the
+              // screen's 24px side padding, so it appeared to burst out of
+              // the app's edges. The lift is conveyed by shadow instead.
+              transform: [{ translateY: dragY }],
               zIndex: 10,
-              elevation: 10,
+              elevation: 12,
               shadowColor: '#000',
-              shadowOpacity: 0.5,
-              shadowRadius: 16,
-              shadowOffset: { width: 0, height: 8 },
+              shadowOpacity: 0.55,
+              shadowRadius: 18,
+              shadowOffset: { width: 0, height: 10 },
             }
-          : { transform: [{ translateY: shift }] },
+          : { transform: [{ translateY: shiftAnim }] },
       ]}
       {...panResponder.panHandlers}>
-      <View
+      <Animated.View
         style={[
           styles.card,
           { backgroundColor: card.card_color || FALLBACK_CARD_COLOR },
           isSelected && styles.cardSelected,
-          isDragging && styles.cardDragging,
+          {
+            // A slight inset while lifted reads as depth without changing the
+            // card's footprint, so nothing can overflow sideways.
+            transform: [
+              {
+                scale: liftAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [1, 0.97],
+                }),
+              },
+            ],
+          },
         ]}>
         <View style={styles.cardTopRow}>
           <Text style={styles.cardType}>{card.card_type}</Text>
@@ -198,7 +236,7 @@ function DraggableCard({
           <Text style={styles.cardHolder}>{card.card_holder_name}</Text>
           <Text style={styles.cardName}>{card.card_name}</Text>
         </View>
-      </View>
+      </Animated.View>
     </Animated.View>
   );
 }
@@ -477,7 +515,22 @@ export default function HomeScreen({ navigation }: Props) {
         return;
       }
 
-      commitDrag();
+      if (!drag) {
+        commitDrag();
+        return;
+      }
+
+      // Glide the lifted card into the slot it will occupy before rewriting
+      // the list. Committing straight away would teleport it there, since the
+      // reorder resets the drag offset to zero in one frame.
+      const resting = (targetRef.current - drag.index) * ITEM_PITCH;
+
+      Animated.spring(dragY, {
+        toValue: resting,
+        useNativeDriver: true,
+        friction: 14,
+        tension: 100,
+      }).start(() => commitDrag());
     },
 
     onCancel: endDrag,
@@ -639,9 +692,6 @@ const styles = StyleSheet.create({
   cardSelected: {
     borderWidth: 3,
     borderColor: '#fff',
-  },
-  cardDragging: {
-    opacity: 0.95,
   },
   cardTopRow: {
     flexDirection: 'row',
