@@ -24,6 +24,11 @@ type Props = {
 
 const FALLBACK_CARD_COLOR = '#6c47ff';
 
+/** Space a card number every four digits so it can be read off the screen. */
+function groupDigits(value: string): string {
+  return value.replace(/(.{4})/g, '$1 ').trim();
+}
+
 export default function CardDetailScreen({ navigation, route }: Props) {
   const { cardId } = route.params;
   const { cards } = useCardStore();
@@ -116,8 +121,8 @@ export default function CardDetailScreen({ navigation, route }: Props) {
         <View style={[styles.card, { backgroundColor: color }]}>
           <Text style={styles.cardType}>{card.card_type}</Text>
           <Text style={styles.cardNumber}>
-            {revealed && card.card_number_encrypted
-              ? card.card_number_encrypted
+            {revealed && revealedCardNumber
+              ? groupDigits(revealedCardNumber)
               : `**** **** **** ${card.last_four_digits}`}
           </Text>
           <View style={styles.cardBottom}>
@@ -187,7 +192,9 @@ export default function CardDetailScreen({ navigation, route }: Props) {
           {card.card_number_encrypted && (
             <InfoRow
               label="Card Number"
-              value={revealed ? revealedCardNumber : '**** **** **** ****'}
+              value={
+                revealed ? groupDigits(revealedCardNumber) : '**** **** **** ****'
+              }
             />
           )}
         </>
