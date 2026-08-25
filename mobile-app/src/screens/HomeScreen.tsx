@@ -3,7 +3,6 @@ import {
   View,
   Text,
   TouchableOpacity,
-  Pressable,
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
@@ -36,6 +35,173 @@ const ITEM_PITCH = CARD_HEIGHT + CARD_GAP;
  * drag, so a slightly shaky finger still opens selection mode.
  */
 const DRAG_SLOP = 12;
+
+/** How long the finger must be held before a card lifts for dragging. */
+const LONG_PRESS_MS = 300;
+
+/** Movement before the long-press fires that means "you are scrolling". */
+const SCROLL_SLOP = 8;
+
+/**
+ * Callbacks a card needs from the screen. Passed through a ref so each card's
+ * PanResponder can be created once and still see current state.
+ */
+interface CardGestureHandlers {
+  onArm: (id: string, index: number) => void;
+  onDragMove: (dy: number) => void;
+  onDragRelease: (moved: boolean) => void;
+  onCancel: () => void;
+  onTap: (id: string) => void;
+  isArmed: () => boolean;
+}
+
+/**
+ * One card tile, owning its own gesture.
+ *
+ * The whole gesture is handled by a PanResponder with a hand-rolled long-press
+ * timer rather than a Pressable. Pressable fires onPressOut the moment its
+ * subtree re-renders with a new zIndex — which is exactly what lifting a card
+ * does — so a drag was being reported as a release before the finger moved,
+ * and every long-press fell through to selection.
+ */
+function DraggableCard({
+  card,
+  index,
+  isDragging,
+  isSelected,
+  selectionMode,
+  shift,
+  dragY,
+  handlers,
+}: {
+  card: Card;
+  index: number;
+  isDragging: boolean;
+  isSelected: boolean;
+  selectionMode: boolean;
+  shift: number;
+  dragY: Animated.Value;
+  handlers: React.RefObject<CardGestureHandlers>;
+}) {
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const armedRef = useRef(false);
+  const movedRef = useRef(false);
+
+  const clearTimer = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        // Claim the touch immediately. The ScrollView can still take it back
+        // on movement via onPanResponderTerminationRequest below, which is how
+        // scrolling continues to work while a finger starts on a card.
+        onStartShouldSetPanResponder: () => true,
+
+        // Refuse to hand the touch to the ScrollView once a card is lifted,
+        // otherwise the list would scroll out from under the drag.
+        onPanResponderTerminationRequest: () => !armedRef.current,
+
+        onPanResponderGrant: () => {
+          armedRef.current = false;
+          movedRef.current = false;
+          clearTimer();
+          timerRef.current = setTimeout(() => {
+            armedRef.current = true;
+            handlers.current?.onArm(card.id, index);
+          }, LONG_PRESS_MS);
+        },
+
+        onPanResponderMove: (_event, gesture) => {
+          if (!armedRef.current) {
+            // Moving before the long-press fires means a scroll, not a drag.
+            if (
+              Math.abs(gesture.dy) > SCROLL_SLOP ||
+              Math.abs(gesture.dx) > SCROLL_SLOP
+            ) {
+              clearTimer();
+            }
+            return;
+          }
+
+          if (Math.abs(gesture.dy) > DRAG_SLOP) movedRef.current = true;
+          handlers.current?.onDragMove(gesture.dy);
+        },
+
+        onPanResponderRelease: (_event, gesture) => {
+          clearTimer();
+
+          if (!armedRef.current) {
+            // Released before the long-press fired, and never moved: a tap.
+            if (
+              Math.abs(gesture.dy) <= SCROLL_SLOP &&
+              Math.abs(gesture.dx) <= SCROLL_SLOP
+            ) {
+              handlers.current?.onTap(card.id);
+            }
+            return;
+          }
+
+          armedRef.current = false;
+          handlers.current?.onDragRelease(movedRef.current);
+        },
+
+        onPanResponderTerminate: () => {
+          clearTimer();
+          if (armedRef.current) {
+            armedRef.current = false;
+            handlers.current?.onCancel();
+          }
+        },
+      }),
+    [card.id, index, handlers]
+  );
+
+  return (
+    <Animated.View
+      style={[
+        styles.cardWrapper,
+        isDragging
+          ? {
+              transform: [{ translateY: dragY }, { scale: 1.04 }],
+              zIndex: 10,
+              elevation: 10,
+              shadowColor: '#000',
+              shadowOpacity: 0.5,
+              shadowRadius: 16,
+              shadowOffset: { width: 0, height: 8 },
+            }
+          : { transform: [{ translateY: shift }] },
+      ]}
+      {...panResponder.panHandlers}>
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: card.card_color || FALLBACK_CARD_COLOR },
+          isSelected && styles.cardSelected,
+          isDragging && styles.cardDragging,
+        ]}>
+        <View style={styles.cardTopRow}>
+          <Text style={styles.cardType}>{card.card_type}</Text>
+          {selectionMode && (
+            <View style={[styles.checkbox, isSelected && styles.checkboxOn]}>
+              {isSelected && <MaterialIcons name="check" size={16} color="#fff" />}
+            </View>
+          )}
+        </View>
+        <Text style={styles.cardNumber}>{cardSubtitle(card)}</Text>
+        <View style={styles.cardBottom}>
+          <Text style={styles.cardHolder}>{card.card_holder_name}</Text>
+          <Text style={styles.cardName}>{card.card_name}</Text>
+        </View>
+      </View>
+    </Animated.View>
+  );
+}
 
 /** The subtitle line on a card tile, which differs per card type. */
 function cardSubtitle(card: Card): string {
@@ -234,7 +400,10 @@ export default function HomeScreen({ navigation }: Props) {
 
   const commitDrag = useCallback(() => {
     const drag = dragRef.current;
-    if (!drag) return;
+    if (!drag) {
+      endDrag();
+      return;
+    }
 
     const from = drag.index;
     const to = targetRef.current;
@@ -255,82 +424,69 @@ export default function HomeScreen({ navigation }: Props) {
   }, [setCards, persistOrder, endDrag]);
 
   const beginDrag = useCallback(
-    (card: Card, index: number) => {
-      dragRef.current = { id: card.id, index };
+    (id: string, index: number) => {
+      dragRef.current = { id, index };
       movedRef.current = false;
       targetRef.current = index;
       setTargetIndex(index);
       dragY.setValue(0);
-      setDraggingId(card.id);
+      setDraggingId(id);
     },
     [dragY]
   );
 
+  const selectOne = useCallback((id: string) => {
+    setSelectionMode(true);
+    setSelectedIds((previous) => new Set(previous).add(id));
+  }, []);
+
   /**
-   * Long-press then release without moving means "select this card".
-   *
-   * Deferred by a tick because the Pressable's press-out also fires the moment
-   * the PanResponder claims the touch mid-drag; by the time this runs,
-   * movedRef tells the two apart.
+   * Held in a ref so each card's PanResponder is built once and still calls
+   * the current versions of these, rather than closing over stale state.
    */
-  const handlePressOut = useCallback(
-    (card: Card) => {
-      setTimeout(() => {
-        if (dragRef.current?.id === card.id && !movedRef.current) {
-          setSelectionMode(true);
-          setSelectedIds((previous) => new Set(previous).add(card.id));
-          endDrag();
-        }
-      }, 0);
+  const handlersRef = useRef<CardGestureHandlers>(null as never);
+  handlersRef.current = {
+    isArmed: () => dragRef.current !== null,
+
+    onArm: beginDrag,
+
+    onDragMove: (dy) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+
+      dragY.setValue(dy);
+
+      const total = cardsRef.current.length;
+      const offset = Math.round(dy / ITEM_PITCH);
+      const next = Math.min(Math.max(drag.index + offset, 0), total - 1);
+
+      if (next !== targetRef.current) {
+        targetRef.current = next;
+        setTargetIndex(next);
+      }
     },
-    [endDrag]
-  );
 
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        // Never claim the touch on start, or the list could not be scrolled.
-        onStartShouldSetPanResponder: () => false,
-        // Only take over once a long-press has armed a card for dragging.
-        onMoveShouldSetPanResponder: () => dragRef.current !== null,
+    onDragRelease: (moved) => {
+      const drag = dragRef.current;
 
-        onPanResponderMove: (_event, gesture) => {
-          const drag = dragRef.current;
-          if (!drag) return;
+      // Held long enough to lift the card but never moved: that is the
+      // long-press-and-release gesture, so select it instead of reordering.
+      if (!moved) {
+        if (drag) selectOne(drag.id);
+        endDrag();
+        return;
+      }
 
-          if (Math.abs(gesture.dy) > DRAG_SLOP) movedRef.current = true;
+      commitDrag();
+    },
 
-          dragY.setValue(gesture.dy);
+    onCancel: endDrag,
 
-          const total = cardsRef.current.length;
-          const offset = Math.round(gesture.dy / ITEM_PITCH);
-          const next = Math.min(Math.max(drag.index + offset, 0), total - 1);
-
-          if (next !== targetRef.current) {
-            targetRef.current = next;
-            setTargetIndex(next);
-          }
-        },
-
-        onPanResponderRelease: (_event, gesture) => {
-          // A drag that never really moved is the same gesture as a
-          // long-press-and-release, so treat it as a selection.
-          if (!movedRef.current && Math.abs(gesture.dy) <= DRAG_SLOP) {
-            const drag = dragRef.current;
-            if (drag) {
-              setSelectionMode(true);
-              setSelectedIds((previous) => new Set(previous).add(drag.id));
-            }
-            endDrag();
-            return;
-          }
-          commitDrag();
-        },
-
-        onPanResponderTerminate: () => endDrag(),
-      }),
-    [dragY, commitDrag, endDrag]
-  );
+    onTap: (id) => {
+      const card = cardsRef.current.find((c) => c.id === id);
+      if (card) handleCardPress(card);
+    },
+  };
 
   // -------------------------------------------------------------------------
   // Render
@@ -338,7 +494,6 @@ export default function HomeScreen({ navigation }: Props) {
 
   const renderCard = (card: Card, index: number) => {
     const isDragging = draggingId === card.id;
-    const isSelected = selectedIds.has(card.id);
 
     // While one card is lifted, the others slide to open a gap at the target.
     let shift = 0;
@@ -352,47 +507,17 @@ export default function HomeScreen({ navigation }: Props) {
     }
 
     return (
-      <Animated.View
+      <DraggableCard
         key={card.id}
-        style={[
-          styles.cardWrapper,
-          isDragging
-            ? {
-                transform: [{ translateY: dragY }, { scale: 1.04 }],
-                zIndex: 10,
-                elevation: 10,
-                shadowColor: '#000',
-                shadowOpacity: 0.5,
-                shadowRadius: 16,
-                shadowOffset: { width: 0, height: 8 },
-              }
-            : { transform: [{ translateY: shift }] },
-        ]}>
-        <Pressable
-          style={[
-            styles.card,
-            { backgroundColor: card.card_color || FALLBACK_CARD_COLOR },
-            isSelected && styles.cardSelected,
-          ]}
-          onPress={() => handleCardPress(card)}
-          onLongPress={() => beginDrag(card, index)}
-          onPressOut={() => handlePressOut(card)}
-          delayLongPress={350}>
-          <View style={styles.cardTopRow}>
-            <Text style={styles.cardType}>{card.card_type}</Text>
-            {selectionMode && (
-              <View style={[styles.checkbox, isSelected && styles.checkboxOn]}>
-                {isSelected && <MaterialIcons name="check" size={16} color="#fff" />}
-              </View>
-            )}
-          </View>
-          <Text style={styles.cardNumber}>{cardSubtitle(card)}</Text>
-          <View style={styles.cardBottom}>
-            <Text style={styles.cardHolder}>{card.card_holder_name}</Text>
-            <Text style={styles.cardName}>{card.card_name}</Text>
-          </View>
-        </Pressable>
-      </Animated.View>
+        card={card}
+        index={index}
+        isDragging={isDragging}
+        isSelected={selectedIds.has(card.id)}
+        selectionMode={selectionMode}
+        shift={shift}
+        dragY={dragY}
+        handlers={handlersRef}
+      />
     );
   };
 
@@ -455,8 +580,7 @@ export default function HomeScreen({ navigation }: Props) {
               tintColor="#6c47ff"
               colors={['#6c47ff']}
             />
-          }
-          {...panResponder.panHandlers}>
+          }>
           {cards.map(renderCard)}
         </ScrollView>
       )}
@@ -515,6 +639,9 @@ const styles = StyleSheet.create({
   cardSelected: {
     borderWidth: 3,
     borderColor: '#fff',
+  },
+  cardDragging: {
+    opacity: 0.95,
   },
   cardTopRow: {
     flexDirection: 'row',
