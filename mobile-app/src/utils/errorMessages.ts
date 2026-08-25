@@ -7,10 +7,42 @@
  * constraint names into the UI while telling the user nothing useful.
  */
 
+/**
+ * Pull a readable string out of whatever was thrown.
+ *
+ * Supabase rejects with a plain object — `{ message, details, hint, code }` —
+ * not an Error instance. Falling back to String() on one of those yields
+ * "[object Object]", so the shape has to be checked explicitly.
+ */
+function extractMessage(error: unknown): string {
+  if (!error) return '';
+  if (typeof error === 'string') return error;
+  if (error instanceof Error) return error.message;
+
+  if (typeof error === 'object') {
+    const candidate = error as { message?: unknown; details?: unknown; hint?: unknown };
+    for (const field of [candidate.message, candidate.details, candidate.hint]) {
+      if (typeof field === 'string' && field.trim()) return field;
+    }
+  }
+
+  return '';
+}
+
+/** The Postgres SQLSTATE code, when the error carries one. */
+function errorCode(error: unknown): string {
+  if (error && typeof error === 'object') {
+    const { code } = error as { code?: unknown };
+    if (typeof code === 'string') return code;
+  }
+  return '';
+}
+
 /** Network failures surface as a TypeError from fetch, with no useful message. */
 function isNetworkError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? '');
-  return /network request failed|failed to fetch|network error/i.test(message);
+  return /network request failed|failed to fetch|network error/i.test(
+    extractMessage(error)
+  );
 }
 
 const AUTH_MESSAGES: ReadonlyArray<[RegExp, string]> = [
@@ -29,7 +61,7 @@ export function authErrorMessage(error: unknown): string {
     return 'Could not reach the server. Check your internet connection.';
   }
 
-  const message = error instanceof Error ? error.message : String(error ?? '');
+  const message = extractMessage(error);
 
   for (const [pattern, friendly] of AUTH_MESSAGES) {
     const match = message.match(pattern);
@@ -49,12 +81,23 @@ export function dataErrorMessage(error: unknown): string {
     return 'Could not reach the server. Check your internet connection.';
   }
 
-  const message = error instanceof Error ? error.message : String(error ?? '');
+  const message = extractMessage(error);
+  const code = errorCode(error);
+
+  // 42703 = undefined_column, 42P01 = undefined_table. The app is ahead of the
+  // database, which happens when a migration in supabase/ has not been run.
+  // Say so plainly — the raw Postgres text names a column and helps nobody.
+  if (code === '42703' || code === '42P01' || /does not exist/i.test(message)) {
+    return (
+      'The database is missing something this version of the app expects. ' +
+      'Run the latest migration in the supabase/ folder, then try again.'
+    );
+  }
 
   // 42501 = insufficient_privilege. Under Row Level Security this means the
   // row is not yours, or the session expired. Either way "permission denied"
   // is not something a user can act on.
-  if (/row-level security|42501|permission denied/i.test(message)) {
+  if (code === '42501' || /row-level security|permission denied/i.test(message)) {
     return 'Your session has expired. Please sign in again.';
   }
 
