@@ -22,15 +22,15 @@
     "platforms": [
       "android"
     ],
-    "extra": {
-      "eas": {
-        "projectId": "7226b7dc-1510-41de-884f-6f711654835f"
-      }
-    },
-    "owner": "kingdome",
+    "owner": "thomas0035",
     "plugins": [
       "expo-font",
       "expo-secure-store"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "282f90de-98bc-45ab-b6ac-7fe295db4aed"
+      }
+    }
   }
 }
