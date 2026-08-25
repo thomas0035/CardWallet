@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from '../config/supabase';
@@ -32,12 +32,34 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
  * reads as an abrupt swap. A slide of ~280ms is long enough to show where a
  * screen came from without feeling sluggish.
  */
+const APP_BACKGROUND = '#0a0a0a';
+
+/**
+ * React Navigation's default theme paints scenes white.
+ *
+ * Every screen sets its own dark background, but the navigator's own scene
+ * sits underneath — and during a transition, part of it is briefly uncovered.
+ * That is the white flash on back navigation. It was always happening; the
+ * slower slide simply made it long enough to see.
+ */
+const navigationTheme = {
+  ...DarkTheme,
+  colors: {
+    ...DarkTheme.colors,
+    background: APP_BACKGROUND,
+    card: APP_BACKGROUND,
+  },
+};
+
 const screenOptions = {
   headerShown: false,
   animation: 'slide_from_right',
   animationDuration: 280,
   // Swiping back from a detail screen feels natural once screens slide.
   gestureEnabled: true,
+  // The theme covers the container; this covers each screen's own surface,
+  // including the moment before its content has laid out.
+  contentStyle: { backgroundColor: APP_BACKGROUND },
 } as const;
 
 /**
@@ -48,6 +70,7 @@ const rootSwapOptions = {
   headerShown: false,
   animation: 'fade',
   animationDuration: 220,
+  contentStyle: { backgroundColor: APP_BACKGROUND },
 } as const;
 
 function SplashScreen() {
@@ -123,7 +146,7 @@ export default function AppNavigator() {
   }
 
   return (
-    <NavigationContainer>
+    <NavigationContainer theme={navigationTheme}>
       {/*
         Two separate stacks rather than one flat stack containing Login.
         Signing in or out swaps the whole stack, so screens never call
