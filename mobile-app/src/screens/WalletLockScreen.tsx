@@ -35,6 +35,20 @@ const MIN_PASSPHRASE_LENGTH = 8;
 
 type Mode = 'loading' | 'setup' | 'unlock';
 
+/**
+ * Give React a frame to paint before starting key derivation.
+ *
+ * PBKDF2 runs 100,000 rounds in JavaScript. Setting the busy flag and awaiting
+ * derivation in the same tick means the CPU-bound loop can start before React
+ * has committed the spinner, so the screen just sits there looking frozen for
+ * several seconds. Yielding twice guarantees the paint lands first.
+ */
+function yieldToPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
+
 export default function WalletLockScreen() {
   const [mode, setMode] = useState<Mode>('loading');
   const [salt, setSalt] = useState<string | null>(null);
@@ -105,6 +119,8 @@ export default function WalletLockScreen() {
   const createWallet = async () => {
     setBusy(true);
     try {
+      await yieldToPaint();
+
       const newSalt = await generateSalt();
       const derived = await deriveKey(passphrase, newSalt);
 
@@ -129,6 +145,8 @@ export default function WalletLockScreen() {
 
     setBusy(true);
     try {
+      await yieldToPaint();
+
       const derived = await deriveKey(passphrase, salt);
 
       // Verify against the stored check value rather than letting a wrong
@@ -259,17 +277,29 @@ export default function WalletLockScreen() {
             )}
           </TouchableOpacity>
 
-          {busy && (
-            <Text style={styles.busyNote}>
-              Deriving your key — this takes a moment by design.
-            </Text>
-          )}
-
           <TouchableOpacity onPress={handleSignOut} disabled={busy}>
             <Text style={styles.linkText}>Sign out</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      {/*
+        A full-screen cover rather than just the button spinner. Deriving the
+        key takes a few seconds on a phone, and a small spinner inside a button
+        is easy to miss — the screen otherwise looks frozen.
+      */}
+      {busy && (
+        <View style={styles.busyOverlay}>
+          <ActivityIndicator color="#6c47ff" size="large" />
+          <Text style={styles.busyTitle}>
+            {isSetup ? 'Securing your wallet' : 'Unlocking your wallet'}
+          </Text>
+          <Text style={styles.busyNote}>
+            Working out your encryption key. This is deliberately slow — the
+            same cost is what makes your passphrase hard to guess.
+          </Text>
+        </View>
+      )}
     </Pressable>
   );
 }
@@ -379,11 +409,26 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
   },
+  busyOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(10,10,10,0.94)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 40,
+  },
+  busyTitle: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '600',
+    marginTop: 24,
+    marginBottom: 10,
+    textAlign: 'center',
+  },
   busyNote: {
-    color: '#666',
+    color: '#777',
     fontSize: 13,
     textAlign: 'center',
-    marginBottom: 16,
+    lineHeight: 19,
   },
   linkText: {
     color: '#6c47ff',

@@ -133,14 +133,24 @@ export default function LoginScreen({ navigation }: Props) {
             <Text style={styles.title}>CardWallet</Text>
             <Text style={styles.subtitle}>Your digital card wallet</Text>
           </Animated.View>
+          {/*
+            autoComplete and importantForAutofill are what make Android's
+            password manager recognise this as a sign-in form. Without them it
+            never offers to save or fill credentials, which is why nothing was
+            being prompted.
+          */}
           <TextInput
             style={styles.input}
-            placeholder="Gmail Address"
+            placeholder="Email Address"
             placeholderTextColor="#888"
             value={email}
             onChangeText={setEmail}
             keyboardType="email-address"
             autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="email"
+            textContentType="username"
+            importantForAutofill="yes"
             returnKeyType="next"
           />
           <View style={styles.passwordContainer}>
@@ -151,6 +161,11 @@ export default function LoginScreen({ navigation }: Props) {
               value={password}
               onChangeText={setPassword}
               secureTextEntry={!showPassword}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="current-password"
+              textContentType="password"
+              importantForAutofill="yes"
               returnKeyType="done"
               onSubmitEditing={handleLogin}
             />

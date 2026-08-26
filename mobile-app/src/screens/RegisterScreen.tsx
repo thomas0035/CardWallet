@@ -155,6 +155,11 @@ export default function RegisterScreen({ navigation }: Props) {
             <Text style={styles.subtitle}>Start managing your cards</Text>
           </Animated.View>
 
+          {/*
+            "new-password" rather than "current-password" tells Android's
+            password manager this is a sign-up, so it offers to generate and
+            then save a password instead of trying to fill an existing one.
+          */}
           <TextInput
             style={styles.input}
             placeholder="Email"
@@ -163,6 +168,10 @@ export default function RegisterScreen({ navigation }: Props) {
             onChangeText={setEmail}
             keyboardType="email-address"
             autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="email"
+            textContentType="username"
+            importantForAutofill="yes"
             returnKeyType="next"
           />
 
@@ -174,6 +183,11 @@ export default function RegisterScreen({ navigation }: Props) {
               value={password}
               onChangeText={setPassword}
               secureTextEntry={!showPassword}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="new-password"
+              textContentType="newPassword"
+              importantForAutofill="yes"
               returnKeyType="next"
             />
             <TouchableOpacity
@@ -195,6 +209,10 @@ export default function RegisterScreen({ navigation }: Props) {
               value={confirmPassword}
               onChangeText={setConfirmPassword}
               secureTextEntry={!showConfirmPassword}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="new-password"
+              textContentType="newPassword"
               returnKeyType="done"
               onSubmitEditing={handleRegister}
             />
